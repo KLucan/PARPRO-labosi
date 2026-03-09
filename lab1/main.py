@@ -5,89 +5,96 @@ from mpi4py import MPI
 
 MAX_BROJ_ITERACIJA = 200
 
-def misli(vrijeme):
-    begin = time()
-    while time() < begin + vrijeme:
-        # odgovaraj na zahtjeve
-        sleep(1)
-    return
+REQUEST = 1
+PROVIDE = 2
+
+TABULATOR = "[--]"
 
 comm = MPI.COMM_WORLD
 # ukupan broj procesa
-world_size =  comm.Get_size()
+world_size = comm.Get_size()
 if world_size < 2:
     print("Trebaju nam barem 2 filozofa!")
     exit(1)
 # moj redni broj
 world_rank = comm.Get_rank()
 # vilice
-left, right = -1, 0
+forks = {"l": None, "r": None}
 # susjedi
 lijevi = (world_rank - 1) % world_size
 desni = (world_rank + 1) % world_size
 # zahtjevi
-zahtjevi = [0, 0]
-#init
+zahtjevi = []
+# init
 if world_rank == 0:
-    left = 0
-    right = 0
-
-#radi
-for i in range(MAX_BROJ_ITERACIJA):
+    forks = {"l": "dirty", "r": "dirty"}
+elif world_rank == world_size - 1:
+    pass
+else:
+    forks["r"] = "dirty"
+# radi
+while True:
     # misli
     begin = time()
-    while time() < begin + randint(1, 6):
-        print(f"Filozof {world_rank} misli.")
-        if comm.iprobe():
-            zahtjev = comm.recv()
-            match zahtjev:
-                case -1: # lijevi
-                    if right >= 0:
-                        comm.send(1, lijevi) # daj lijevom vilicu
-                        right = -1
-                    else:
-                        zahtjevi[0] = 1
-                case -2: # desni
-                    if left >= 0:
-                        comm.send(2, desni) # daj desnom vilicu
-                        left = -1
-                    else:
-                        zahtjevi[1] = 1
+    sleep_time = randint(1, 5)
+    while time() < begin + sleep_time:
+        print(f"{world_rank * TABULATOR}Mislim.")
+        if comm.iprobe(tag=REQUEST):
+            request = comm.recv(tag=REQUEST)
+            if (request == lijevi and forks["l"] is not None) or (
+                request == desni and forks["r"] is not None
+            ):
+                comm.send(world_rank, request, PROVIDE)
+                if request == lijevi:
+                    forks["l"] = None
+                elif request == desni:
+                    forks["r"] = None
+            else:
+                comm.send(request, world_rank, REQUEST)
         sleep(1)
 
-    #gladan
-    while (left < 0 or right < 0):
-        if left < 0:
-            comm.isend(-1, lijevi) # reci lijevom da trebaš vilicu
-        if right < 0:
-            comm.isend(-2, desni) # reci desnom da trebaš vilicu
-    
-        while(left < 0 or right < 0):
-            msg = comm.recv()
-            match msg:
-                case -1: # desni kaže da treba vilicu
-                    if right >= 0: # imam desnu vilicu
-                        comm.send(2, desni) # daj desnom vilicu
-                        right = -1
-                    else:
-                        zahtjevi[1] = 1
-                case -2: # lijevi kaže da treba vilicu
-                    if left >= 0: # imam lijevu vilicu
-                        comm.send(1, lijevi) # daj lijevom vilicu
-                        left = -1
-                    else:
-                        zahtjevi[0] = 1
-                case 1: # desni šalje vilicu
-                    right = 1
-                case 2: # lijevi šalje vilicu
-                    left = 1
-        
-    print(f"Filozof {world_rank} jede.")
-    left = 0
-    right = 0
-    if zahtjevi[0]: # lijevi zahtjev
-        comm.send(2, desni)
-        zahtjevi[0] = 0
-    if zahtjevi[1]: # desni zahtjev
-        comm.send(1, lijevi)
-        zahtjevi[1] = 0
+    # gladan
+    while not all(forks.values()):
+        if forks["l"] is None:
+            print(f"{world_rank * TABULATOR}Trazim lijevu vilicu.")
+            comm.isend(world_rank, lijevi, REQUEST)
+        if forks["r"] is None:
+            print(f"{world_rank * TABULATOR}Trazim desnu vilicu.")
+            comm.isend(world_rank, desni, REQUEST)
+
+        while not all(forks.values()):
+            if comm.iprobe(tag=PROVIDE):
+                request = comm.recv(tag=PROVIDE)
+                if request == lijevi:
+                    forks["l"] = "clean"
+                elif request == desni:
+                    forks["r"] = "clean"
+                else:
+                    raise ValueError
+            elif comm.iprobe(tag=REQUEST):
+                request = comm.recv(tag=REQUEST)
+                if request == lijevi and forks["l"] == "dirty":
+                    comm.isend(world_rank, lijevi, PROVIDE)
+                    forks["l"] = None
+                    comm.isend(world_rank, lijevi, REQUEST)
+                elif request == desni and forks["r"] == "dirty":
+                    comm.isend(world_rank, desni, PROVIDE)
+                    forks["r"] = None
+                    comm.isend(world_rank, desni, REQUEST)
+                elif request in (lijevi, desni):
+                    zahtjevi.append(request)
+                else:
+                    raise ValueError
+
+    print(f"{world_rank * TABULATOR}Jedem.")
+    forks["l"] = "dirty"
+    forks["r"] = "dirty"
+
+    for request in zahtjevi:
+        comm.isend(world_rank, request, PROVIDE)
+        if request == lijevi:
+            forks["l"] = None
+        elif request == desni:
+            forks["r"] = None
+        else:
+            raise ValueError
