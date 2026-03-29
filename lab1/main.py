@@ -8,7 +8,7 @@ MAX_BROJ_ITERACIJA = 200
 REQUEST = 1
 PROVIDE = 2
 
-TABULATOR = "[--]"
+TABULATOR = "   "
 
 comm = MPI.COMM_WORLD
 # ukupan broj procesa
@@ -39,18 +39,18 @@ while True:
     sleep_time = randint(1, 5)
     while time() < begin + sleep_time:
         print(f"{world_rank * TABULATOR}Mislim.")
-        if comm.iprobe(tag=REQUEST):
+        while comm.iprobe(tag=REQUEST):
             request = comm.recv(tag=REQUEST)
             if (request == lijevi and forks["l"] is not None) or (
                 request == desni and forks["r"] is not None
             ):
                 comm.send(world_rank, request, PROVIDE)
-                if request == lijevi:
+                if request == lijevi and (forks["l"] is not None):
                     forks["l"] = None
                 elif request == desni:
                     forks["r"] = None
             else:
-                comm.send(request, world_rank, REQUEST)
+                zahtjevi.append(request)
         sleep(1)
 
     # gladan
@@ -65,7 +65,7 @@ while True:
         while not all(forks.values()):
             if comm.iprobe(tag=PROVIDE):
                 request = comm.recv(tag=PROVIDE)
-                if request == lijevi:
+                if request == lijevi and (forks["l"] != "clean"):
                     forks["l"] = "clean"
                 elif request == desni:
                     forks["r"] = "clean"
@@ -98,3 +98,4 @@ while True:
             forks["r"] = None
         else:
             raise ValueError
+    zahtjevi = []
