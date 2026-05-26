@@ -1,0 +1,6 @@
+*.zip
+*.pdf
+*.docx
+
+__pycache__
+.ruff_cache

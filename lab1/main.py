@@ -3,12 +3,10 @@ from time import sleep, time
 
 from mpi4py import MPI
 
-MAX_BROJ_ITERACIJA = 200
-
 REQUEST = 1
 PROVIDE = 2
 
-TABULATOR = "   "
+TABULATOR = "[--]"
 
 comm = MPI.COMM_WORLD
 # ukupan broj procesa
