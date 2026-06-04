@@ -263,6 +263,87 @@ def bfs_best_move_mpi(game, depth, comm, world_size, world_rank, max_task_depth)
     return max(scores, key=scores.get)
 
 
+def process_task(comm, game_state, col, depth, level, world_rank, world_size, max_task_depth):
+    """
+    Odigraj potez, zatim delegiraj dalje ili izračunaj sam ako si list.
+    Vraća (col, result) odnosno stupac i vrijednost.
+    """
+    global victory_state
+    saved = victory_state
+
+    game_state.play(col)
+
+    if victory_state != 0:
+        result = float(victory_state)
+        victory_state = saved
+        return (col, result)
+
+    if depth <= 1 or level >= max_task_depth:
+        result = bfs_average_eval(game_state, depth - 1)
+        victory_state = saved
+        return (col, result)
+
+    sub_valid = [c for c in range(7) if game_state.is_valid_move(c)]
+    if not sub_valid:
+        victory_state = saved
+        return (col, 0.0)
+
+    # svi procesi osim sebe i glavnog procesa
+    workers = [w for w in range(1, world_size) if w != world_rank]
+
+    if not workers:
+        # P = 2 -> sve moramo sami
+        total = 0.0
+        for c in sub_valid:
+            new_game = deepcopy(game_state)
+            saved2 = victory_state
+            new_game.play(c)
+            if victory_state != 0:
+                total += float(victory_state)
+            else:
+                total += bfs_average_eval(new_game, depth - 2)
+            victory_state = saved2
+        victory_state = saved
+        return (col, total / len(sub_valid))
+
+    # delegacija
+    total = 0.0
+    count = 0
+    sub_reqs = []
+
+    for i, c in enumerate(sub_valid):
+        dest = workers[i % len(workers)]
+        req = comm.isend(
+            (deepcopy(game_state), c, depth - 1, level + 1),
+            dest=dest,
+        )
+        sub_reqs.append(req)
+
+    MPI.Request.Waitall(sub_reqs)
+
+    expected = len(sub_reqs)
+    while expected > 0:
+        status2 = MPI.Status()
+        msg2 = comm.recv(source=MPI.ANY_SOURCE, status=status2)
+        if len(msg2) == 2:
+            _c, score = msg2
+            total += score
+            count += 1
+            expected -= 1
+        else:
+            # dobili smo zadatak od drugog worker-a, delegiraj dalje
+            task_state, task_col, task_depth, task_level = msg2
+            task_sender = status2.Get_source()
+            sub_result = process_task(comm, task_state, task_col,
+                                      task_depth, task_level,
+                                      world_rank, world_size, max_task_depth)
+            comm.send(sub_result, dest=task_sender)
+
+    result = total / count if count > 0 else 0.0
+    victory_state = saved
+    return (col, result)
+
+
 argparser = ArgumentParser()
 argparser.add_argument("max_tasks", type=int)
 argparser.add_argument("depth", type=int)
@@ -338,76 +419,9 @@ else:
 
         game_state, col, depth, level = msg
 
-        # primili smo poruku da se worker gasi
         if game_state is None:
             break
 
-        game_state.play(col)
-
-        if victory_state != 0:
-            result = float(victory_state)
-
-        elif depth <= 1 or level >= MAX_TASK_DEPTH:
-            result = bfs_average_eval(game_state, depth - 1)
-        else:
-            sub_valid = [c for c in range(7) if game_state.is_valid_move(c)]
-            if not sub_valid:
-                result = 0.0
-            else:
-                total = 0.0
-                count = 0
-                sub_reqs = []
-
-                for i, c in enumerate(sub_valid):
-                    dest = (i % (world_size - 1)) + 1
-                    if dest == world_rank:
-                        # sami sebi zadajemo zadatak
-                        new_game = deepcopy(game_state)
-                        saved = victory_state
-                        new_game.play(c)
-                        if victory_state != 0:
-                            total += float(victory_state)
-                        else:
-                            total += bfs_average_eval(new_game, depth - 2)
-                        victory_state = saved
-                        count += 1
-                    else:
-                        req = comm.isend(
-                            (deepcopy(game_state), c, depth - 1, level + 1),
-                            dest=dest,
-                        )
-                        sub_reqs.append(req)
-
-                if sub_reqs:
-                    MPI.Request.Waitall(sub_reqs)
-
-                    expected = len(sub_reqs)
-                    while expected > 0:
-                        status2 = MPI.Status()
-                        msg2 = comm.recv(source=MPI.ANY_SOURCE, status=status2)
-                        if len(msg2) == 2:
-                            _c, score = msg2
-                            total += score
-                            count += 1
-                            expected -= 1
-                        else:
-                            # dobili smo zadatak od drugog worker-a, obradi ga odmah
-                            task_state, task_col, task_depth, task_level = msg2
-                            task_sender = status2.Get_source()
-
-                            saved_inner = victory_state
-                            task_state.play(task_col)
-
-                            if victory_state != 0:
-                                task_result = float(victory_state)
-                            else:
-                                task_result = bfs_average_eval(
-                                    task_state, task_depth - 1
-                                )
-
-                            victory_state = saved_inner
-                            comm.send((task_col, task_result), dest=task_sender)
-
-                result = total / count if count > 0 else 0.0
-
-        comm.send((col, result), dest=sender)
+        result_tuple = process_task(comm, game_state, col, depth, level,
+                                     world_rank, world_size, MAX_TASK_DEPTH)
+        comm.send(result_tuple, dest=sender)
