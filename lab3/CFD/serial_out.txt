@@ -1,0 +1,22 @@
+Compiling...
+Running...
+After 1000 iterations, the error is 0.00125534
+Time: 14.842740058898926
+After 1000 iterations, the error is 0.00125534
+Time: 14.732775688171387
+After 1000 iterations, the error is 0.00125534
+Time: 15.103071212768555
+After 1000 iterations, the error is 0.00125534
+Time: 15.475496768951416
+After 1000 iterations, the error is 0.00125534
+Time: 15.60432481765747
+After 1000 iterations, the error is 0.00125534
+Time: 15.971449613571167
+After 1000 iterations, the error is 0.00125534
+Time: 16.111947536468506
+After 1000 iterations, the error is 0.00125534
+Time: 16.02824831008911
+After 1000 iterations, the error is 0.00125534
+Time: 16.238601446151733
+After 1000 iterations, the error is 0.00125534
+Time: 16.505802631378174
