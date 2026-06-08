@@ -29,11 +29,10 @@ int main(int argc, char **argv)
 	int mbase=32;
 	int nbase=32;
 
-	int irrotational = 1, checkerr = 0;
+	int checkerr = 0;
 
 	int m,n,b,h,w;
 	int iter;
-	int i,j;
 
 	double tstart, tstop, ttot, titer;
 
@@ -66,15 +65,15 @@ int main(int argc, char **argv)
 	m = mbase*scalefactor;
 	n = nbase*scalefactor;
 
-	printf("Running CFD on %d x %d grid in serial\n",m,n);
+	printf("Running CFD on %d x %d grid with parallel\n",m,n);
 
-	//allocate arrays
+	//allocate host arrays
 	psi    = (double *) malloc((m+2)*(n+2)*sizeof(double));
 	psitmp = (double *) malloc((m+2)*(n+2)*sizeof(double));
 
 	//zero the psi array
-	for (i=0;i<m+2;i++) {
-		for(j=0;j<n+2;j++) {
+	for (int i=0;i<m+2;i++) {
+		for(int j=0;j<n+2;j++) {
 			psi[i*(m+2)+j]=0.0;
 		}
 	}
@@ -85,12 +84,28 @@ int main(int argc, char **argv)
 	//compute normalisation factor for error
 	bnorm=0.0;
 
-	for (i=0;i<m+2;i++) {
-			for (j=0;j<n+2;j++) {
+	for (int i=0;i<m+2;i++) {
+			for (int j=0;j<n+2;j++) {
 			bnorm += psi[i*(m+2)+j]*psi[i*(m+2)+j];
 		}
 	}
 	bnorm=sqrt(bnorm);
+
+	// GPU SETUP
+
+	double *d_psi, *d_psitmp, *d_partial;
+	cudaMalloc(&d_psi,    (m+2)*(n+2)*sizeof(double));
+	cudaMalloc(&d_psitmp, (m+2)*(n+2)*sizeof(double));
+
+	cudaMemcpy(d_psi, psi, (m+2)*(n+2)*sizeof(double), cudaMemcpyHostToDevice);
+
+	// 256 dretvi po bloku
+	dim3 threadsPerBlock(16, 16);
+	dim3 numBlocks((n + 15) / 16, (m + 15) / 16);
+	int total_blocks = numBlocks.x * numBlocks.y;
+
+	cudaMalloc(&d_partial, total_blocks * sizeof(double));
+	double *h_partial = (double *)malloc(total_blocks * sizeof(double));
 
 	//begin iterative Jacobi loop
 	printf("\nStarting main loop...\n\n");
@@ -99,14 +114,22 @@ int main(int argc, char **argv)
 	for(iter=1;iter<=numiter;iter++) {
 
 		//calculate psi for next iteration
-		jacobistep(psitmp,psi,m,n);
+		jacobistep_kernel<<<numBlocks, threadsPerBlock>>>(d_psitmp, d_psi, m, n);
 
 		//calculate current error if required
 		if (checkerr || iter == numiter) {
-			error = deltasq(psitmp,psi,m,n);
+			// shared memory
+			size_t smem_size = threadsPerBlock.x * threadsPerBlock.y * sizeof(double);
+			deltasq_kernel<<<numBlocks, threadsPerBlock, smem_size>>>(d_psitmp, d_psi, d_partial, m, n);
 
-			error=sqrt(error);
-			error=error/bnorm;
+			// suma na hostu
+			cudaMemcpy(h_partial, d_partial, total_blocks * sizeof(double), cudaMemcpyDeviceToHost);
+			double dsq = 0.0;
+			for (int k = 0; k < total_blocks; k++) {
+				dsq += h_partial[k];
+			}
+			error = sqrt(dsq);
+			error = error / bnorm;
 		}
 
 		//quit early if we have reached required tolerance
@@ -117,12 +140,8 @@ int main(int argc, char **argv)
 			}
 		}
 
-		//copy back
-		for(i=1;i<=m;i++) {
-			for(j=1;j<=n;j++) {
-				psi[i*(m+2)+j]=psitmp[i*(m+2)+j];
-			}
-		}
+		// psitmp -> psi
+		copyback_kernel<<<numBlocks, threadsPerBlock>>>(d_psi, d_psitmp, m, n);
 
 		//print loop information
 		if(iter%printfreq == 0) {
@@ -136,6 +155,9 @@ int main(int argc, char **argv)
 	}	// iter
 
 	if (iter > numiter) iter=numiter;
+
+	// razultat nazad na hosta
+	cudaMemcpy(psi, d_psi, (m+2)*(n+2)*sizeof(double), cudaMemcpyDeviceToHost);
 
 	tstop=gettime();
 
@@ -153,6 +175,10 @@ int main(int argc, char **argv)
 	//writeplotfile(m,n,scalefactor);
 
 	//free un-needed arrays
+	cudaFree(d_psi);
+	cudaFree(d_psitmp);
+	cudaFree(d_partial);
+	free(h_partial);
 	free(psi);
 	free(psitmp);
 	printf("... finished\n");
